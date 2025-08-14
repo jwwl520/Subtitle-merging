@@ -14,7 +14,7 @@ import tempfile
 class SubtitleMerger:
     def __init__(self, root):
         self.root = root
-        self.root.title("字幕合并工具 - v2.1 (智能排序与匹配) - by 不是绅士")
+        self.root.title("字幕合并工具 - v2.2 (优化文件夹数字排序) - by 不是绅士")
         self.root.geometry("1000x1100")  # 增加高度给日志更多空间
         self.root.resizable(True, True)
         self.root.configure()  # 使用默认背景
@@ -73,6 +73,30 @@ class SubtitleMerger:
         """针对纯文件名的自然排序键函数"""
         return [int(text) if text.isdigit() else text.lower()
                 for text in re.split('([0-9]+)', filename_str)]
+    
+    def smart_folder_sort_key(self, folder_name):
+        """智能文件夹排序键函数，专门处理包含数字范围的文件夹名称"""
+        # 寻找文件夹名中的数字范围模式，如 "1-30", "31-61" 等
+        range_pattern = r'(\d+)-(\d+)'
+        range_matches = re.findall(range_pattern, folder_name)
+        
+        if range_matches:
+            # 如果找到数字范围，使用第一个数字作为主要排序键
+            first_number = int(range_matches[0][0])
+            # 为了处理重叠范围，也考虑结束数字
+            last_number = int(range_matches[0][1])
+            # 使用起始数字作为主排序键，结束数字作为次排序键
+            return (first_number, last_number, folder_name.lower())
+        else:
+            # 如果没有找到范围，寻找单独的数字
+            numbers = re.findall(r'\d+', folder_name)
+            if numbers:
+                # 使用第一个找到的数字作为排序键
+                first_number = int(numbers[0])
+                return (first_number, 0, folder_name.lower())
+            else:
+                # 如果没有数字，使用字母排序，但排在有数字的后面
+                return (float('inf'), 0, folder_name.lower())
 
     def create_path_section(self):
         path_frame = ttk.LabelFrame(self.main_frame, text="路径设置", padding="15")
@@ -595,7 +619,10 @@ class SubtitleMerger:
                 self.root.after(0, self.root.update_idletasks)
         
         self.total_duration_label.config(text=f"视频总时长: {self.format_duration(self.total_duration_seconds)}")
-        for folder, dur_sec in sorted(self.folder_durations.items()): self.folder_duration_tree.insert("", tk.END, values=(folder, self.format_duration(dur_sec)))
+        # 使用智能排序来显示文件夹时长，按数字大小排序
+        sorted_folders = sorted(self.folder_durations.items(), key=lambda x: self.smart_folder_sort_key(x[0]))
+        for folder, dur_sec in sorted_folders: 
+            self.folder_duration_tree.insert("", tk.END, values=(folder, self.format_duration(dur_sec)))
         self.log_message(f"扫描完成！视频总时长: {self.format_duration(self.total_duration_seconds)}")
         if self.folder_durations: self.log_message("各文件夹时长已更新。")
         
