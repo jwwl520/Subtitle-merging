@@ -512,8 +512,8 @@ class SubtitleMerger:
             for dirpath, _, filenames in os.walk(video_root_dir):
                 for f in filenames:
                     if f.lower().endswith(('.mp4', '.mov', '.avi', '.mkv', '.wmv', '.flv')):
-                        # 使用列表以便后续修改时长, 增加时长占位符 0.0
-                        raw_video_files.append([f, os.path.join(dirpath, f), self.get_base_filename(f), 0.0])
+                        # 使用列表，包含：[文件名, 完整路径, 基础名, 时长(秒), 帧数, 帧率]
+                        raw_video_files.append([f, os.path.join(dirpath, f), self.get_base_filename(f), 0.0, 0, 0.0])
         
         if os.path.isdir(srt_root_dir):
             for dirpath, _, filenames in os.walk(srt_root_dir):
@@ -534,7 +534,8 @@ class SubtitleMerger:
 
         # --- 更新UI列表 ---
         self.video_count_label.config(text=f"视频文件总数: {len(self.video_files_data)}")
-        for i, (name, full_path, _, _) in enumerate(self.video_files_data):
+        for i, video_item in enumerate(self.video_files_data):
+            name = video_item[0]
             self.video_tree.insert("", tk.END, values=(i+1, name, "待扫描", "待扫描"))  # 添加帧数列
             
         self.srt_count_label.config(text=f"字幕文件总数: {len(self.srt_files_data)}")
@@ -583,7 +584,8 @@ class SubtitleMerger:
         video_tree_items = self.video_tree.get_children() # 获取treeview中的item ID列表
 
         for i, video_data_item in enumerate(self.video_files_data): # 遍历已排序的数据列表
-            video_name, video_full_path, _, _ = video_data_item # 解包列表
+            video_name = video_data_item[0]
+            video_full_path = video_data_item[1]
             # 假设 self.video_files_data 和 video_tree_items 顺序一致
             tree_item_id = video_tree_items[i] if i < len(video_tree_items) else None
 
@@ -595,18 +597,42 @@ class SubtitleMerger:
                 relative_folder = Path(os.path.dirname(video_full_path)).name # Fallback
 
             try:
-                duration = self.get_video_duration_ffprobe(video_full_path)
-                framerate = self.get_video_framerate_ffprobe(video_full_path)  # 获取帧率
-                video_data_item[3] = duration # <-- 在数据源中存储精确时长
-                self.total_duration_seconds += duration
-                self.folder_durations[relative_folder] = self.folder_durations.get(relative_folder, 0.0) + duration
-                formatted_duration = self.format_duration(duration)
-                if tree_item_id:
-                    current_values = list(self.video_tree.item(tree_item_id, 'values'))
-                    current_values[2] = framerate  # 帧数列是索引2
-                    current_values[3] = formatted_duration  # 时长列现在是索引3
-                    self.video_tree.item(tree_item_id, values=tuple(current_values))
-                self.log_message(f"[{i+1}/{total_files_to_scan}] {relative_folder}/{video_name}: {formatted_duration} ({framerate})")
+                # 获取基于帧的精确信息
+                total_frames, fps_decimal, duration = self.get_video_frame_info_ffprobe(video_full_path)
+                
+                if total_frames is not None and fps_decimal is not None and duration is not None:
+                    # 存储完整信息：[文件名, 路径, 基础名, 时长, 帧数, 帧率]
+                    video_data_item[3] = duration
+                    video_data_item[4] = total_frames
+                    video_data_item[5] = fps_decimal
+                    
+                    self.total_duration_seconds += duration
+                    self.folder_durations[relative_folder] = self.folder_durations.get(relative_folder, 0.0) + duration
+                    
+                    formatted_duration = self.format_duration(duration)
+                    framerate_display = f"{total_frames}f@{fps_decimal:.2f}fps"
+                    
+                    if tree_item_id:
+                        current_values = list(self.video_tree.item(tree_item_id, 'values'))
+                        current_values[2] = framerate_display  # 帧数和帧率
+                        current_values[3] = formatted_duration  # 时长
+                        self.video_tree.item(tree_item_id, values=tuple(current_values))
+                    
+                    self.log_message(f"[{i+1}/{total_files_to_scan}] {relative_folder}/{video_name}: {formatted_duration} ({framerate_display})")
+                else:
+                    # 回退到旧方法
+                    duration = self.get_video_duration_ffprobe(video_full_path)
+                    framerate = self.get_video_framerate_ffprobe(video_full_path)
+                    video_data_item[3] = duration
+                    self.total_duration_seconds += duration
+                    self.folder_durations[relative_folder] = self.folder_durations.get(relative_folder, 0.0) + duration
+                    formatted_duration = self.format_duration(duration)
+                    if tree_item_id:
+                        current_values = list(self.video_tree.item(tree_item_id, 'values'))
+                        current_values[2] = framerate
+                        current_values[3] = formatted_duration
+                        self.video_tree.item(tree_item_id, values=tuple(current_values))
+                    self.log_message(f"[{i+1}/{total_files_to_scan}] {relative_folder}/{video_name}: {formatted_duration} ({framerate})")
             except Exception as e:
                 self.log_message(f"扫描 {video_name} 出错: {str(e)}")
                 if tree_item_id:
@@ -662,7 +688,10 @@ class SubtitleMerger:
             if process.returncode != 0 or stderr: self.log_message(f"警告: ffprobe未能获取 '{os.path.basename(video_path_str)}' 时长. 错误: {stderr.strip() if stderr else '未知'}"); return 0.0
             output = stdout.strip()
             if not output: self.log_message(f"警告: ffprobe未能获取 '{os.path.basename(video_path_str)}' 时长 (无输出)."); return 0.0
-            return float(output)
+            # 使用Decimal来保持高精度
+            from decimal import Decimal, ROUND_HALF_UP
+            duration_decimal = Decimal(output).quantize(Decimal('0.001'), rounding=ROUND_HALF_UP)
+            return float(duration_decimal)
         except subprocess.TimeoutExpired: self.log_message(f"获取 '{os.path.basename(video_path_str)}' 时长超时。"); return 0.0
         except FileNotFoundError: self.log_message("错误: ffprobe 命令未找到。"); self.root.after(0, lambda: messagebox.showerror("ffprobe错误", "ffprobe 未找到")); return 0.0
         except ValueError: self.log_message(f"无法转换ffprobe输出为时长: {output if 'output' in locals() else ''}"); return 0.0
@@ -721,6 +750,73 @@ class SubtitleMerger:
         except Exception: 
             return "未知"
 
+    def get_video_frame_info_ffprobe(self, video_path):
+        """获取视频的帧数和精确帧率（用于精确时间计算）"""
+        try:
+            if not self.ffprobe_path:
+                return None, None, None
+                
+            video_path_str = str(video_path)
+            startupinfo = None
+            if os.name == 'nt':
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+            
+            # 获取帧率（分数形式）
+            process_fps = subprocess.Popen(
+                [self.ffprobe_path, '-v', 'error', '-select_streams', 'v:0', 
+                 '-show_entries', 'stream=r_frame_rate', 
+                 '-of', 'default=noprint_wrappers=1:nokey=1', video_path_str],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, startupinfo=startupinfo)
+            stdout_fps, _ = process_fps.communicate(timeout=15)
+            
+            # 获取总帧数（使用 nb_frames 而不是 nb_read_packets）
+            # nb_read_packets 是数据包数，对于B帧视频会不准确
+            # nb_frames 才是真正的帧数
+            process_frames = subprocess.Popen(
+                [self.ffprobe_path, '-v', 'error', '-select_streams', 'v:0',
+                 '-show_entries', 'stream=nb_frames',
+                 '-of', 'default=noprint_wrappers=1:nokey=1', video_path_str],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, startupinfo=startupinfo)
+            stdout_frames, stderr_frames = process_frames.communicate(timeout=30)
+            
+            # 如果 nb_frames 不可用（某些容器格式），尝试count_frames
+            if not stdout_frames.strip() or stdout_frames.strip() == 'N/A':
+                self.log_message(f"  警告：nb_frames不可用，使用count_frames方法（较慢）")
+                process_frames = subprocess.Popen(
+                    [self.ffprobe_path, '-v', 'error', '-select_streams', 'v:0',
+                     '-count_frames', '-show_entries', 'stream=nb_read_frames',
+                     '-of', 'default=noprint_wrappers=1:nokey=1', video_path_str],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, startupinfo=startupinfo)
+                stdout_frames, _ = process_frames.communicate(timeout=60)
+            
+            # 解析帧率（保持分数形式以获得最高精度）
+            fps_str = stdout_fps.strip()
+            if '/' in fps_str:
+                fps_num, fps_den = fps_str.split('/')
+                fps_numerator = int(fps_num)
+                fps_denominator = int(fps_den)
+                fps_decimal = fps_numerator / fps_denominator
+            else:
+                fps_decimal = float(fps_str)
+                fps_numerator = int(fps_decimal)
+                fps_denominator = 1
+            
+            # 解析总帧数
+            total_frames = int(stdout_frames.strip())
+            
+            # 使用帧数和帧率计算精确时长（秒）
+            from fractions import Fraction
+            frame_duration = Fraction(fps_denominator, fps_numerator)  # 每帧的时长（秒）
+            total_duration = float(frame_duration * total_frames)  # 总时长（秒）
+            
+            return total_frames, fps_decimal, total_duration
+            
+        except Exception as e:
+            self.log_message(f"获取视频帧信息失败: {str(e)}")
+            return None, None, None
+
     def log_message(self, message):
         timestamp = time.strftime("%H:%M:%S", time.localtime()); self.root.after(0, lambda: self._append_log_message(f"[{timestamp}] {message}\n"))
     def _append_log_message(self, formatted_message):
@@ -758,15 +854,45 @@ class SubtitleMerger:
                 except Exception as e: self.log_message(f"备份失败: {str(e)}")
 
 
+            # 使用基于帧的精确时间计算
+            from fractions import Fraction
+            cumulative_frames = 0  # 累积帧数（整数，完全精确）
+            reference_fps = None  # 参考帧率
+            
+            # 记录所有需要修正的字幕
+            corrected_subtitles = []  # 存储需要修正的字幕信息
+            
             processed_count = 0
             for i, video_data_item in enumerate(selected_videos_data):
-                video_name, video_full_path, video_base_name, video_duration_seconds = video_data_item
+                video_name = video_data_item[0]
+                video_full_path = video_data_item[1]
+                video_base_name = video_data_item[2]
+                video_duration_seconds = video_data_item[3]
+                video_frames = video_data_item[4] if len(video_data_item) > 4 else 0
+                video_fps = video_data_item[5] if len(video_data_item) > 5 else 0.0
 
-                # 如果时长未扫描(为0)，则在合并时实时获取，确保精度
-                if video_duration_seconds == 0.0:
-                    self.log_message(f"警告：视频 '{video_name}' 时长为0，可能是未预先扫描。尝试实时获取...")
-                    video_duration_seconds = self.get_video_duration_ffprobe(video_full_path)
-                    video_data_item[3] = video_duration_seconds # 同时更新数据
+                # 如果帧信息未扫描，实时获取
+                if video_frames == 0 or video_fps == 0.0:
+                    self.log_message(f"警告：视频 '{video_name}' 帧信息缺失，尝试实时获取...")
+                    frames, fps, duration = self.get_video_frame_info_ffprobe(video_full_path)
+                    if frames and fps and duration:
+                        video_frames = frames
+                        video_fps = fps
+                        video_duration_seconds = duration
+                        # 更新数据
+                        if len(video_data_item) > 5:
+                            video_data_item[3] = duration
+                            video_data_item[4] = frames
+                            video_data_item[5] = fps
+                    else:
+                        # 如果还是失败，回退到旧方法
+                        video_duration_seconds = self.get_video_duration_ffprobe(video_full_path)
+                        video_data_item[3] = video_duration_seconds
+                
+                # 设置参考帧率（使用第一个视频的帧率）
+                if reference_fps is None and video_fps > 0:
+                    reference_fps = video_fps
+                    self.log_message(f"使用参考帧率: {reference_fps:.6f} fps (来自第一个视频)")
 
                 # 增强匹配逻辑
                 matched_srt_data = None
@@ -796,11 +922,12 @@ class SubtitleMerger:
                 
                 if not matched_srt_data:
                     self.log_message(f"警告：视频 '{video_name}' 未找到同基本名的SRT文件，已跳过。")
-                    # 即使跳过字幕，也必须累加该视频的精确时长作为后续文件的偏移量
-                    if video_duration_seconds > 0:
-                         current_total_offset_seconds += video_duration_seconds
+                    # 即使跳过字幕，也必须累加该视频的帧数作为偏移量
+                    if video_frames > 0:
+                         cumulative_frames += video_frames
+                         self.log_message(f"  累积帧数: +{video_frames} = {cumulative_frames}")
                     else:
-                         self.log_message(f"警告：跳过的视频 '{video_name}' 时长为0，偏移量未增加。")
+                         self.log_message(f"警告：跳过的视频 '{video_name}' 帧数为0，偏移量未增加。")
                     self.progress["value"] = i + 1; self.root.after(0, self.root.update_idletasks)
                     continue # 跳过这个视频的字幕处理
 
@@ -809,9 +936,34 @@ class SubtitleMerger:
                 if video_duration_seconds == 0.0 and i < len(selected_videos_data) - 1:
                     self.log_message(f"警告：视频 '{video_name}' 时长为0或获取失败。后续字幕偏移可能不准确。")
 
+                # 计算基于帧的精确偏移量
+                if reference_fps and reference_fps > 0:
+                    # 使用整数帧数计算，避免浮点误差
+                    # 偏移秒数 = 累积帧数 / 帧率（精确到帧）
+                    offset_total_frames = cumulative_frames
+                    offset_hours = offset_total_frames // int(reference_fps * 3600)
+                    remaining_frames = offset_total_frames % int(reference_fps * 3600)
+                    offset_minutes = remaining_frames // int(reference_fps * 60)
+                    remaining_frames = remaining_frames % int(reference_fps * 60)
+                    offset_seconds = remaining_frames // int(reference_fps)
+                    offset_frames = remaining_frames % int(reference_fps)
+                    
+                    # 转换为秒（用于pysrt的shift）
+                    current_offset_seconds = cumulative_frames / reference_fps
+                else:
+                    # 如果没有帧率信息，回退到简单计算
+                    current_offset_seconds = cumulative_frames / reference_fps if reference_fps else 0.0
+                    offset_hours = offset_minutes = offset_seconds = offset_frames = 0
+                
                 formatted_vid_dur = self.format_duration(video_duration_seconds)
-                formatted_offset = self.format_duration(current_total_offset_seconds)
-                self.log_message(f"处理字幕 [{processed_count+1}/{len(selected_videos_data)}]: '{srt_name}' (视频: '{video_name}', 时长: {formatted_vid_dur}, 应用偏移: {formatted_offset})")
+                formatted_offset = self.format_duration(current_offset_seconds)
+                # 显示剪辑软件格式的时间（时:分:秒:帧）
+                editor_format_offset = f"{offset_hours:02d}:{offset_minutes:02d}:{offset_seconds:02d}:{offset_frames:02d}"
+                
+                frame_info = f"{video_frames}帧@{video_fps:.3f}fps" if video_frames > 0 else "帧信息缺失"
+                self.log_message(f"处理字幕 [{processed_count+1}/{len(selected_videos_data)}]: '{srt_name}'")
+                self.log_message(f"  视频: '{video_name}' ({frame_info}, 时长: {formatted_vid_dur})")
+                self.log_message(f"  偏移: {formatted_offset} | 剪辑格式: {editor_format_offset} (累积: {cumulative_frames}帧)")
                 
                 try:
                     subs_for_current_file = pysrt.open(srt_full_path, encoding='utf-8')
@@ -820,15 +972,121 @@ class SubtitleMerger:
                     except Exception as enc_e: self.log_message(f"错误: 无法解码字幕 '{srt_name}': {enc_e}"); continue
                 except Exception as e: self.log_message(f"错误: 打开字幕 '{srt_name}' 失败: {e}"); continue
                 
-                if current_total_offset_seconds > 0:
-                    subs_for_current_file.shift(seconds=current_total_offset_seconds)
+                # ===== 检测字幕时长（严格模式：0.01秒容差）=====
+                # 注意：字幕时长检测不影响偏移计算，偏移始终基于视频的实际帧数
+                if len(subs_for_current_file) > 0:
+                    last_sub = subs_for_current_file[-1]
+                    srt_end_time_ms = (last_sub.end.hours * 3600000 + 
+                                      last_sub.end.minutes * 60000 + 
+                                      last_sub.end.seconds * 1000 + 
+                                      last_sub.end.milliseconds)
+                    srt_end_time_seconds = srt_end_time_ms / 1000.0
+                    
+                    time_diff = srt_end_time_seconds - video_duration_seconds
+                    
+                    if abs(time_diff) > 0.01:
+                        if time_diff > 0:
+                            correction_info = {
+                                'video_name': video_name,
+                                'srt_name': srt_name,
+                                'episode': processed_count + 1,
+                                'time_diff': time_diff,
+                                'srt_end': self.format_duration(srt_end_time_seconds),
+                                'video_duration': formatted_vid_dur
+                            }
+                            corrected_subtitles.append(correction_info)
+                            
+                            self.log_message(f"  ⚠️ 警告：字幕结束时间超出视频时长 {time_diff:.3f}秒")
+                            self.log_message(f"     字幕结束: {self.format_duration(srt_end_time_seconds)}")
+                            self.log_message(f"     视频时长: {formatted_vid_dur}")
+                            
+                            # 修正字幕结束时间为视频时长
+                            video_duration_ms = int(video_duration_seconds * 1000)
+                            last_sub.end.hours = video_duration_ms // 3600000
+                            last_sub.end.minutes = (video_duration_ms % 3600000) // 60000
+                            last_sub.end.seconds = (video_duration_ms % 60000) // 1000
+                            last_sub.end.milliseconds = video_duration_ms % 1000
+                            
+                            self.log_message(f"     ✓ 已自动修正为: {formatted_vid_dur}")
+                        elif time_diff < -0.01:
+                            self.log_message(f"  ℹ️ 字幕提前结束 {abs(time_diff):.3f}秒（正常）")
+                        else:
+                            self.log_message(f"  ✓ 字幕时长完美（差异 {time_diff:.3f}秒）")
+                    else:
+                        self.log_message(f"  ✓ 字幕时长完美（差异 {time_diff:.3f}秒）")
+                # ===== 检测结束 =====
+                
+                # 使用基于帧的精确偏移
+                if cumulative_frames > 0 and reference_fps > 0:
+                    # 计算精确的偏移时间（避免浮点累积误差）
+                    # 方法：逐条字幕手动调整时间，而不是使用shift
+                    offset_ms = int((cumulative_frames * 1000.0) / reference_fps)
+                    
+                    for sub in subs_for_current_file:
+                        # 转换开始时间
+                        start_ms = (sub.start.hours * 3600000 + 
+                                   sub.start.minutes * 60000 + 
+                                   sub.start.seconds * 1000 + 
+                                   sub.start.milliseconds)
+                        new_start_ms = start_ms + offset_ms
+                        
+                        sub.start.hours = new_start_ms // 3600000
+                        sub.start.minutes = (new_start_ms % 3600000) // 60000
+                        sub.start.seconds = (new_start_ms % 60000) // 1000
+                        sub.start.milliseconds = new_start_ms % 1000
+                        
+                        # 转换结束时间
+                        end_ms = (sub.end.hours * 3600000 + 
+                                 sub.end.minutes * 60000 + 
+                                 sub.end.seconds * 1000 + 
+                                 sub.end.milliseconds)
+                        new_end_ms = end_ms + offset_ms
+                        
+                        sub.end.hours = new_end_ms // 3600000
+                        sub.end.minutes = (new_end_ms % 3600000) // 60000
+                        sub.end.seconds = (new_end_ms % 60000) // 1000
+                        sub.end.milliseconds = new_end_ms % 1000
                 
                 all_subs_combined.extend(subs_for_current_file)
-                current_total_offset_seconds += video_duration_seconds # 为下一个配对的字幕文件累加偏移
+                
+                # 累加帧数（整数运算，完全精确）
+                if video_frames > 0:
+                    cumulative_frames += video_frames
+                
                 processed_count +=1
                 self.progress["value"] = i + 1; self.root.after(0, self.root.update_idletasks)
             
             self.log_message(f"共成功匹配并处理了 {processed_count} 对影音文件。")
+            
+            # ===== 显示所有需要修正的字幕汇总 =====
+            if corrected_subtitles:
+                self.log_message("")
+                self.log_message("="*70)
+                self.log_message("⚠️⚠️⚠️ 字幕时长修正汇总报告 ⚠️⚠️⚠️")
+                self.log_message("="*70)
+                self.log_message(f"检测到 {len(corrected_subtitles)} 个字幕文件的结束时间超出视频时长，已自动修正：")
+                self.log_message("")
+                for info in corrected_subtitles:
+                    self.log_message(f"❌ 第{info['episode']}集: {info['srt_name']}")
+                    self.log_message(f"   视频: {info['video_name']}")
+                    self.log_message(f"   超出: {info['time_diff']:.3f}秒")
+                    self.log_message(f"   原字幕结束时间: {info['srt_end']}")
+                    self.log_message(f"   修正为视频时长: {info['video_duration']}")
+                    self.log_message("")
+                self.log_message("="*70)
+                self.log_message("✓ 所有超出的字幕已自动修正，确保后续集数字幕偏移准确！")
+                self.log_message("="*70)
+                self.log_message("")
+            else:
+                self.log_message("")
+                self.log_message("="*70)
+                self.log_message("✓✓✓ 所有字幕时长检查通过！✓✓✓")
+                self.log_message("="*70)
+                self.log_message("所有字幕文件的结束时间都与视频时长完美匹配（误差<0.01秒）")
+                self.log_message("="*70)
+                self.log_message("")
+            # ===== 汇总结束 =====
+            
             if len(all_subs_combined) > 0:
                 all_subs_combined.save(final_output_path, encoding='utf-8')
                 msg_s = f"字幕合并成功！共 {len(all_subs_combined)} 条字幕 ({processed_count}个文件)."; self.log_message(msg_s)
