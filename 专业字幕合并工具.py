@@ -143,41 +143,39 @@ class SubtitleMerger:
         merge_frame = ttk.Frame(options_frame)
         merge_frame.pack(fill=tk.X, pady=(0,10))
         
-        # 字幕合并范围显示
-        range1_label = ttk.Label(merge_frame, text="字幕合并1: 1-20集", 
-                               font=('Microsoft YaHei UI', 10, 'bold'))
-        range1_label.grid(row=0, column=0, padx=15, pady=10, sticky=tk.W)
-        
-        self.last5_label = ttk.Label(merge_frame, text="字幕合并2: 后5集（待识别）", 
-                                   font=('Microsoft YaHei UI', 10, 'bold'))
-        self.last5_label.grid(row=0, column=1, padx=15, pady=10, sticky=tk.W)
-        
-        # 统一的合并按钮 - 增大尺寸让它更突出
-        self.merge_button = ttk.Button(merge_frame, text="🚀 开始字幕合并", 
-                                     command=self.start_dual_merge, 
-                                     width=18, state=tk.DISABLED)
-        self.merge_button.grid(row=0, column=2, padx=15, pady=10, sticky=tk.W)
+        # 合并全部按钮
+        self.merge_all_button = ttk.Button(merge_frame, text="🚀 合并全部字幕", 
+                                          command=self.start_merge_all, 
+                                          width=18, state=tk.DISABLED,
+                                          style='Accent.TButton')
+        self.merge_all_button.grid(row=0, column=0, padx=15, pady=10, sticky=tk.W)
         
         # 自定义合并范围
         ttk.Label(merge_frame, text="自定义合并:", 
-                 font=('Microsoft YaHei UI', 10, 'bold')).grid(row=0, column=3, padx=15, pady=10, sticky=tk.W)
+                 font=('Microsoft YaHei UI', 10, 'bold')).grid(row=0, column=1, padx=15, pady=10, sticky=tk.W)
         
-        ttk.Label(merge_frame, text="起始:").grid(row=0, column=4, padx=(5,2), pady=10, sticky=tk.W)
+        ttk.Label(merge_frame, text="起始:").grid(row=0, column=2, padx=(5,2), pady=10, sticky=tk.W)
         self.custom_start_entry = ttk.Entry(merge_frame, width=6)
-        self.custom_start_entry.grid(row=0, column=5, padx=2, pady=10)
-        self.custom_start_entry.insert(0, "0")  # 默认值改为0
+        self.custom_start_entry.grid(row=0, column=3, padx=2, pady=10)
+        self.custom_start_entry.insert(0, "1")  # 默认起始为1
         
-        ttk.Label(merge_frame, text="结束:").grid(row=0, column=6, padx=(5,2), pady=10, sticky=tk.W)
+        ttk.Label(merge_frame, text="结束:").grid(row=0, column=4, padx=(5,2), pady=10, sticky=tk.W)
         self.custom_end_entry = ttk.Entry(merge_frame, width=6)
-        self.custom_end_entry.grid(row=0, column=7, padx=2, pady=10)
-        self.custom_end_entry.insert(0, "0")  # 默认值改为0
+        self.custom_end_entry.grid(row=0, column=5, padx=2, pady=10)
+        self.custom_end_entry.insert(0, "0")  # 0表示自动使用全部
+        
+        # 自定义合并按钮
+        self.custom_merge_button = ttk.Button(merge_frame, text="开始自定义合并",
+                                             command=self.start_custom_merge,
+                                             width=15, state=tk.DISABLED)
+        self.custom_merge_button.grid(row=0, column=6, padx=10, pady=10, sticky=tk.W)
         
         # 视频总数显示标签
         self.total_videos_label = ttk.Label(merge_frame, text="(共0个视频)")
-        self.total_videos_label.grid(row=0, column=8, padx=5, pady=10, sticky=tk.W)
+        self.total_videos_label.grid(row=0, column=7, padx=5, pady=10, sticky=tk.W)
         
         # 配置网格权重
-        merge_frame.columnconfigure(9, weight=1)
+        merge_frame.columnconfigure(8, weight=1)
         
         # 第二行：其他选项
         options_frame2 = ttk.Frame(options_frame); options_frame2.pack(fill=tk.X, pady=(10,0))
@@ -188,9 +186,6 @@ class SubtitleMerger:
         self.auto_suffix_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(options_frame2, text="自动添加集数后缀", variable=self.auto_suffix_var).grid(row=0, column=2, padx=(20,5), pady=5, sticky=tk.W)
         options_frame2.columnconfigure(3, weight=1)
-        
-        # 存储后5集的范围
-        self.last5_range = {"start": 0, "end": 0}
 
     def _get_ffprobe_path(self):
         """获取ffprobe.exe的路径"""
@@ -283,8 +278,8 @@ class SubtitleMerger:
         self.status_bar = ttk.Label(self.root, text="就绪", relief=tk.FLAT, anchor=tk.W, padding=(10,5))
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
-    def start_dual_merge(self):
-        """同时执行两个合并任务或自定义合并"""
+    def start_merge_all(self):
+        """合并全部字幕"""
         if self.processing: 
             messagebox.showinfo("提示", "处理中..."); 
             return
@@ -296,175 +291,82 @@ class SubtitleMerger:
             messagebox.showwarning("警告", "无视频文件."); 
             return
         
-        # 检查是否有自定义范围输入
+        total_videos = len(self.video_files_data)
+        
+        # 确认合并全部
+        result = messagebox.askyesno("确认合并全部", 
+            f"确定要合并全部字幕吗？\n\n详细信息：\n• 共{total_videos}个视频文件\n• 起始集数：第1集\n• 结束集数：第{total_videos}集")
+        
+        if result:
+            self.log_message(f"开始合并全部字幕（第1-{total_videos}集）...")
+            self.merge_all_button.config(state=tk.DISABLED)
+            self.custom_merge_button.config(state=tk.DISABLED)
+            threading.Thread(target=self._merge_srt_files_thread, args=(output_path, 1, total_videos, True), daemon=True).start()
+
+    def start_custom_merge(self):
+        """自定义范围合并"""
+        if self.processing: 
+            messagebox.showinfo("提示", "处理中..."); 
+            return
+        output_path = self.output_file_entry.get().strip()
+        if not output_path: 
+            messagebox.showwarning("警告", "请选择输出路径."); 
+            return
+        if not self.video_files_data: 
+            messagebox.showwarning("警告", "无视频文件."); 
+            return
+        
+        # 获取自定义范围
         try:
             custom_start_text = self.custom_start_entry.get().strip()
             custom_end_text = self.custom_end_entry.get().strip()
             
-            # 如果用户输入了自定义范围（且不是默认的0）
-            if (custom_start_text and custom_start_text != "0" and 
-                custom_end_text and custom_end_text != "0"):
-                
-                custom_start = int(custom_start_text)
-                custom_end = int(custom_end_text)
-                
-                # 验证自定义范围
-                total_videos = len(self.video_files_data)
-                if custom_start <= 0:
-                    messagebox.showwarning("警告", "起始集数必须大于0！")
-                    return
-                
-                if custom_end > total_videos:
-                    messagebox.showwarning("警告", f"结束集数不能超过视频总数！当前共有{total_videos}个视频文件。")
-                    return
-                
-                if custom_start > custom_end:
-                    messagebox.showwarning("警告", "起始集数不能大于结束集数！")
-                    return
-                
-                # 确认自定义合并
-                result = messagebox.askyesno("确认自定义合并", 
-                    f"检测到自定义范围输入，确定要合并第{custom_start}-{custom_end}集吗？\n\n详细信息：\n• 共{custom_end-custom_start+1}个文件\n• 起始集数：第{custom_start}集\n• 结束集数：第{custom_end}集\n• 视频总数：{total_videos}个")
-                
-                if result:
-                    # 执行自定义合并
-                    self.log_message(f"开始自定义合并第{custom_start}-{custom_end}集...")
-                    self.merge_button.config(state=tk.DISABLED)
-                    threading.Thread(target=self._merge_srt_files_thread, args=(output_path, custom_start, custom_end, True), daemon=True).start()
+            custom_start = int(custom_start_text) if custom_start_text else 1
+            custom_end = int(custom_end_text) if custom_end_text and custom_end_text != "0" else len(self.video_files_data)
+            
+            # 验证自定义范围
+            total_videos = len(self.video_files_data)
+            if custom_start <= 0:
+                messagebox.showwarning("警告", "起始集数必须大于0！")
                 return
+            
+            if custom_end > total_videos:
+                messagebox.showwarning("警告", f"结束集数不能超过视频总数！当前共有{total_videos}个视频文件。")
+                return
+            
+            if custom_start > custom_end:
+                messagebox.showwarning("警告", "起始集数不能大于结束集数！")
+                return
+            
+            # 确认自定义合并
+            result = messagebox.askyesno("确认自定义合并", 
+                f"确定要合并第{custom_start}-{custom_end}集吗？\n\n详细信息：\n• 共{custom_end-custom_start+1}个文件\n• 起始集数：第{custom_start}集\n• 结束集数：第{custom_end}集\n• 视频总数：{total_videos}个")
+            
+            if result:
+                # 执行自定义合并
+                self.log_message(f"开始自定义合并第{custom_start}-{custom_end}集...")
+                self.merge_all_button.config(state=tk.DISABLED)
+                self.custom_merge_button.config(state=tk.DISABLED)
+                threading.Thread(target=self._merge_srt_files_thread, args=(output_path, custom_start, custom_end, True), daemon=True).start()
                 
         except ValueError:
-            # 如果输入不是有效数字，继续使用默认逻辑
-            pass
-        
-        # 原有的默认合并逻辑
-        # 检查两个范围是否都有效
-        total_videos = len(self.video_files_data)
-        range1_valid = total_videos >= 20  # 1-20集范围是否有效
-        range2_valid = self.last5_range["start"] > 0 and self.last5_range["end"] > 0  # 后5集范围是否有效
-        
-        if not range1_valid and not range2_valid:
-            messagebox.showwarning("警告", "无可用的合并范围。请确保至少有20个视频文件或后5集范围已识别。")
-            return
-        
-        # 询问用户要执行哪些合并
-        merge_options = []
-        if range1_valid:
-            merge_options.append("1-20集")
-        if range2_valid:
-            last5_text = f"{self.last5_range['start']}-{self.last5_range['end']}集"
-            merge_options.append(f"后5集({last5_text})")
-        
-        if len(merge_options) == 2:
-            result = messagebox.askyesnocancel("合并选择", 
-                f"检测到两个可用范围：\n• {merge_options[0]}\n• {merge_options[1]}\n\n是：同时合并两个范围\n否：仅合并1-20集\n取消：仅合并后5集")
-            if result is None:  # 取消 - 仅合并后5集
-                self.start_merge_with_range(self.last5_range["start"], self.last5_range["end"])
-            elif result:  # 是 - 同时合并
-                self.start_sequential_merge()
-            else:  # 否 - 仅合并1-20集
-                self.start_merge_with_range(1, 20)
-        elif "1-20集" in merge_options:
-            self.start_merge_with_range(1, 20)
-        else:
-            self.start_merge_with_range(self.last5_range["start"], self.last5_range["end"])
+            messagebox.showwarning("警告", "请输入有效的数字！")
 
-    def start_sequential_merge(self):
-        """顺序执行两个合并任务"""
-        self.log_message("开始顺序合并：先合并1-20集，再合并后5集...")
-        self.processing = True
-        self.merge_button.config(state=tk.DISABLED)
-        
-        # 先合并1-20集
-        threading.Thread(target=self._sequential_merge_thread, daemon=True).start()
 
-    def _sequential_merge_thread(self):
-        """顺序合并的线程函数"""
-        try:
-            output_path = self.output_file_entry.get().strip()
-            
-            # 第一个合并：1-20集
-            self.log_message("=" * 50)
-            self.log_message("开始第一个合并任务：1-20集")
-            self.log_message("=" * 50)
-            self._merge_srt_files_thread(output_path, 1, 20, show_completion_dialog=False)
-            
-            # 等待一秒钟
-            time.sleep(1)
-            
-            # 第二个合并：后5集
-            self.log_message("=" * 50)
-            self.log_message(f"开始第二个合并任务：{self.last5_range['start']}-{self.last5_range['end']}集")
-            self.log_message("=" * 50)
-            self._merge_srt_files_thread(output_path, self.last5_range["start"], self.last5_range["end"], show_completion_dialog=False)
-            
-            self.log_message("=" * 50)
-            self.log_message("所有合并任务完成！")
-            self.log_message("=" * 50)
-            
-            self.root.after(0, lambda: messagebox.showinfo("完成", "两个字幕文件合并任务都已完成！"))
-            
-        except Exception as e:
-            self.log_message(f"顺序合并出错: {str(e)}")
-            self.root.after(0, lambda: messagebox.showerror("错误", f"顺序合并出错: {str(e)}"))
-        finally:
-            self.processing = False
-            self.root.after(0, lambda: self.merge_button.config(state=tk.NORMAL))
-
-    def start_merge_with_range(self, start_episode, end_episode):
-        """使用指定范围开始合并"""
-        if self.processing: 
-            messagebox.showinfo("提示", "处理中..."); 
-            return
-        output_path = self.output_file_entry.get().strip()
-        if not output_path: 
-            messagebox.showwarning("警告", "请选择输出路径."); 
-            return
-        if not self.video_files_data: 
-            messagebox.showwarning("警告", "无视频文件."); 
-            return
-        
-        # 检查范围是否有效
-        total_videos = len(self.video_files_data)
-        if start_episode <= 0 or end_episode > total_videos or start_episode > end_episode:
-            messagebox.showwarning("警告", f"集数范围无效！当前共有{total_videos}个视频文件。"); 
-            return
-        
-        self.log_message(f"开始合并第{start_episode}-{end_episode}集...")
-        self.merge_button.config(state=tk.DISABLED)
-        threading.Thread(target=self._merge_srt_files_thread, args=(output_path, start_episode, end_episode, True), daemon=True).start()
-
-    def update_last5_range(self):
-        """更新后5集范围显示和按钮状态"""
+    def update_button_states(self):
+        """更新按钮状态"""
         total_videos = len(self.video_files_data)
         
         # 更新视频总数显示
         self.total_videos_label.config(text=f"(共{total_videos}个视频)")
         
-        # 自动更新自定义范围的默认结束值（仅当当前为0时）
+        # 启用或禁用按钮
         if total_videos > 0:
-            current_end = self.custom_end_entry.get().strip()
-            if current_end == "0" or current_end == "":
-                # 如果是默认值0或空，不自动更新，保持用户可以手动输入
-                pass
-        
-        if total_videos >= 5:
-            start_episode = total_videos - 4  # 后5个的起始位置
-            end_episode = total_videos
-            self.last5_range = {"start": start_episode, "end": end_episode}
-            self.last5_label.config(text=f"字幕合并2: 后5集（{start_episode}-{end_episode}）")
-            self.merge_button.config(state=tk.NORMAL)
-            self.log_message(f"已识别后5集范围：第{start_episode}-{end_episode}集")
-        elif total_videos > 0:
-            # 如果视频文件少于5个，则使用全部
-            self.last5_range = {"start": 1, "end": total_videos}
-            self.last5_label.config(text=f"字幕合并2: 全部{total_videos}集（1-{total_videos}）")
-            self.merge_button.config(state=tk.NORMAL)
-            self.log_message(f"视频文件不足5个，后5集范围设为全部：第1-{total_videos}集")
+            self.merge_all_button.config(state=tk.NORMAL)
+            self.custom_merge_button.config(state=tk.NORMAL)
         else:
-            self.last5_range = {"start": 0, "end": 0}
-            self.last5_label.config(text="字幕合并2: 后5集（待识别）")
-            self.merge_button.config(state=tk.DISABLED)
+            self.merge_all_button.config(state=tk.DISABLED)
+            self.custom_merge_button.config(state=tk.DISABLED)
 
     def generate_output_filename_with_suffix(self, original_path, start_episode, end_episode):
         """生成带集数后缀的输出文件名"""
@@ -546,12 +448,8 @@ class SubtitleMerger:
         if not self.srt_files_data and os.path.isdir(srt_root_dir): self.log_message("未在字幕目录找到SRT文件。")
         if self.video_files_data or self.srt_files_data: self.log_message("文件扫描完成。")
         
-        # 如果启用了"自动识别后5个"，则自动更新集数范围
-        # if hasattr(self, 'auto_last5_var') and self.auto_last5_var.get():
-        #     self.on_auto_last5_changed()
-        
-        # 更新后5集范围
-        self.update_last5_range()
+        # 更新按钮状态
+        self.update_button_states()
         
         # 检查是否应该进行自动扫描（仅在两个目录都有内容时进行）
         self.check_and_start_auto_scan()
@@ -656,8 +554,8 @@ class SubtitleMerger:
         # if hasattr(self, 'auto_last5_var') and self.auto_last5_var.get():
         #     self.root.after(0, self.on_auto_last5_changed)
         
-        # 扫描完成后，更新后5集范围
-        self.root.after(0, self.update_last5_range)
+        # 扫描完成后，更新按钮状态
+        self.root.after(0, self.update_button_states)
         
         # 重置自动扫描标志，允许下次重新选择文件夹时再次自动扫描
         self.auto_scan_scheduled = False
@@ -1105,8 +1003,9 @@ class SubtitleMerger:
         finally:
             self.processing = False
             # 恢复按钮状态
-            has_videos = self.last5_range["start"] > 0
-            self.root.after(0, lambda: self.merge_button.config(state=tk.NORMAL if has_videos else tk.DISABLED))
+            has_videos = len(self.video_files_data) > 0
+            self.root.after(0, lambda: self.merge_all_button.config(state=tk.NORMAL if has_videos else tk.DISABLED))
+            self.root.after(0, lambda: self.custom_merge_button.config(state=tk.NORMAL if has_videos else tk.DISABLED))
             self.root.after(0, lambda: self.status_bar.config(text="就绪"))
             self.root.after(0, lambda: self.progress.config(value=0)); self.root.after(0, self.root.update_idletasks)
 
