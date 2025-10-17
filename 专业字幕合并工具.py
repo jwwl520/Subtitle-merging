@@ -273,6 +273,7 @@ class SubtitleMerger:
         action_frame = ttk.Frame(self.main_frame, padding=(0, 5, 0, 0)); action_frame.pack(fill=tk.X, pady=(5,0))
         self.progress = ttk.Progressbar(action_frame, orient="horizontal", length=500, mode="determinate"); self.progress.pack(side=tk.LEFT, padx=(0,10), fill=tk.X, expand=True)
         self.clear_button = ttk.Button(action_frame, text="清空日志", command=self.clear_log); self.clear_button.pack(side=tk.RIGHT, padx=5)
+        self.reset_button = ttk.Button(action_frame, text="🔄 重置", command=self.reset_all); self.reset_button.pack(side=tk.RIGHT, padx=5)
 
     def create_status_bar(self):
         self.status_bar = ttk.Label(self.root, text="就绪", relief=tk.FLAT, anchor=tk.W, padding=(10,5))
@@ -559,8 +560,181 @@ class SubtitleMerger:
         
         # 重置自动扫描标志，允许下次重新选择文件夹时再次自动扫描
         self.auto_scan_scheduled = False
+        
+        # 扫描完成后立即检查字幕文件问题
+        self.root.after(0, self.check_subtitle_problems_after_scan)
             
         self.status_bar.config(text="视频时长扫描完成。"); self.progress["value"] = 0; self.root.after(0, self.root.update_idletasks)
+
+    def check_subtitle_problems_after_scan(self):
+        """扫描完成后检查字幕文件问题并弹窗提醒"""
+        if not self.video_files_data or not self.srt_files_data:
+            return
+        
+        self.log_message("开始检查字幕文件问题...")
+        
+        time_disorder_subtitles = []
+        large_time_diff_subtitles = []
+        
+        # 遍历所有字幕文件进行检查
+        for srt_idx, (srt_name, srt_full_path, srt_base_name) in enumerate(self.srt_files_data):
+            # 尝试匹配对应的视频
+            matched_video_data = None
+            video_idx = -1
+            
+            # 精确匹配
+            for v_idx, video_data_item in enumerate(self.video_files_data):
+                video_base_name = video_data_item[2]
+                if srt_base_name.lower() == video_base_name.lower():
+                    matched_video_data = video_data_item
+                    video_idx = v_idx
+                    break
+            
+            # EP模式匹配
+            if not matched_video_data:
+                srt_ep_match = re.search(r'EP\s*(\d+)', srt_base_name, re.IGNORECASE)
+                if srt_ep_match:
+                    srt_ep_num = int(srt_ep_match.group(1))
+                    for v_idx, video_data_item in enumerate(self.video_files_data):
+                        video_name = video_data_item[0]
+                        video_ep_match = re.search(r'EP\s*(\d+)', video_name, re.IGNORECASE)
+                        if video_ep_match and int(video_ep_match.group(1)) == srt_ep_num:
+                            matched_video_data = video_data_item
+                            video_idx = v_idx
+                            break
+            
+            if not matched_video_data:
+                continue
+            
+            video_name = matched_video_data[0]
+            video_duration_seconds = matched_video_data[3]
+            
+            # 检查字幕文件
+            try:
+                subs = pysrt.open(srt_full_path, encoding='utf-8')
+            except UnicodeDecodeError:
+                try:
+                    subs = pysrt.open(srt_full_path, encoding='gbk')
+                except:
+                    continue
+            except:
+                continue
+            
+            # 检查时间轴乱序
+            if len(subs) > 1:
+                for idx in range(1, len(subs)):
+                    prev_sub = subs[idx - 1]
+                    curr_sub = subs[idx]
+                    
+                    prev_time_ms = (prev_sub.start.hours * 3600000 + 
+                                   prev_sub.start.minutes * 60000 + 
+                                   prev_sub.start.seconds * 1000 + 
+                                   prev_sub.start.milliseconds)
+                    curr_time_ms = (curr_sub.start.hours * 3600000 + 
+                                   curr_sub.start.minutes * 60000 + 
+                                   curr_sub.start.seconds * 1000 + 
+                                   curr_sub.start.milliseconds)
+                    
+                    if curr_time_ms < prev_time_ms:
+                        regression_details = f"第{idx}条 ({self.format_duration(curr_time_ms/1000)}) < 第{idx+1}条 ({self.format_duration(prev_time_ms/1000)})"
+                        disorder_info = {
+                            'video_name': video_name,
+                            'srt_name': srt_name,
+                            'episode_num': video_idx + 1,  # 序号
+                            'episode_display': srt_name,  # 显示文件名
+                            'details': regression_details
+                        }
+                        time_disorder_subtitles.append(disorder_info)
+                        break
+            
+            # 检查字幕超出视频时长
+            if len(subs) > 0 and video_duration_seconds > 0:
+                max_end_time_ms = 0
+                for sub in subs:
+                    end_time_ms = (sub.end.hours * 3600000 + 
+                                  sub.end.minutes * 60000 + 
+                                  sub.end.seconds * 1000 + 
+                                  sub.end.milliseconds)
+                    if end_time_ms > max_end_time_ms:
+                        max_end_time_ms = end_time_ms
+                
+                srt_end_time_seconds = max_end_time_ms / 1000.0
+                time_diff = srt_end_time_seconds - video_duration_seconds
+                
+                if time_diff > 3.0:
+                    large_diff_info = {
+                        'video_name': video_name,
+                        'srt_name': srt_name,
+                        'episode_num': video_idx + 1,  # 序号
+                        'episode_display': srt_name,  # 显示文件名
+                        'time_diff': time_diff,
+                        'srt_end': self.format_duration(srt_end_time_seconds),
+                        'video_duration': self.format_duration(video_duration_seconds)
+                    }
+                    large_time_diff_subtitles.append(large_diff_info)
+        
+        # 显示检查结果
+        has_problems = large_time_diff_subtitles or time_disorder_subtitles
+        
+        if has_problems:
+            self.show_subtitle_problems_dialog(time_disorder_subtitles, large_time_diff_subtitles)
+        else:
+            self.log_message("✓ 字幕文件检查完成，未发现问题！")
+
+    def show_subtitle_problems_dialog(self, time_disorder_subtitles, large_time_diff_subtitles):
+        """显示字幕问题弹窗"""
+        self.log_message("")
+        self.log_message("="*70)
+        self.log_message("🚨 检测到字幕文件存在问题！")
+        self.log_message("="*70)
+        
+        warning_details = []
+        
+        # 处理时间轴乱序
+        if time_disorder_subtitles:
+            self.log_message(f"\n【时间轴乱序】检测到 {len(time_disorder_subtitles)} 个字幕文件：")
+            for info in time_disorder_subtitles:
+                # 使用文件名显示，而不是序号
+                file_display = os.path.splitext(info['srt_name'])[0]  # 去掉扩展名
+                self.log_message(f"🔀 {file_display}: {info['srt_name']}")
+                self.log_message(f"   问题: {info['details']}")
+                warning_details.append(f"{file_display}: 时间轴乱序")
+        
+        # 处理超出3秒
+        if large_time_diff_subtitles:
+            self.log_message(f"\n【超出时长】检测到 {len(large_time_diff_subtitles)} 个字幕文件：")
+            for info in large_time_diff_subtitles:
+                # 使用文件名显示，而不是序号
+                file_display = os.path.splitext(info['srt_name'])[0]  # 去掉扩展名
+                self.log_message(f"⏰ {file_display}: {info['srt_name']}")
+                self.log_message(f"   超出: {info['time_diff']:.3f}秒")
+                warning_details.append(f"{file_display}: 超出 {info['time_diff']:.1f}秒")
+        
+        self.log_message("="*70)
+        
+        # 弹窗提醒
+        warning_message = "⚠️ 检测到字幕文件存在问题，建议修复后再合并！\n\n"
+        
+        if time_disorder_subtitles:
+            warning_message += f"🔀 时间轴乱序：{len(time_disorder_subtitles)} 个文件\n"
+            warning_message += "   • 字幕时间轴前后顺序混乱\n"
+            warning_message += "   • 拖入视频软件会显示很长\n\n"
+        
+        if large_time_diff_subtitles:
+            warning_message += f"⏰ 超出时长：{len(large_time_diff_subtitles)} 个文件\n"
+            warning_message += "   • 字幕比视频长超过3秒\n"
+            warning_message += "   • 可能版本不匹配\n\n"
+        
+        warning_message += "问题文件详情：\n"
+        display_items = warning_details[:8]
+        warning_message += "\n".join(display_items)
+        
+        if len(warning_details) > 8:
+            warning_message += f"\n... 还有 {len(warning_details) - 8} 个文件"
+        
+        warning_message += "\n\n⚠️ 建议先修复这些问题，再进行字幕合并！"
+        
+        messagebox.showwarning("字幕文件问题警告", warning_message)
 
     def format_duration(self, seconds_float):
         if not isinstance(seconds_float, (int, float)) or seconds_float < 0: return "00:00:00,000"
@@ -720,6 +894,63 @@ class SubtitleMerger:
     def _append_log_message(self, formatted_message):
         self.log_text.insert(tk.END, formatted_message); self.log_text.see(tk.END)
     def clear_log(self): self.log_text.delete(1.0, tk.END)
+    
+    def reset_all(self):
+        """重置所有内容，清空路径和文件列表"""
+        if self.processing:
+            messagebox.showinfo("提示", "正在处理中，无法重置。")
+            return
+        
+        # 确认重置
+        result = messagebox.askyesno("确认重置", 
+            "确定要重置所有内容吗？\n\n将清空：\n• 视频文件夹路径\n• 字幕文件夹路径\n• 输出文件路径\n• 所有文件列表\n• 扫描数据")
+        
+        if not result:
+            return
+        
+        # 清空路径输入框
+        self.video_folder_entry.delete(0, tk.END)
+        self.srt_folder_entry.delete(0, tk.END)
+        self.output_file_entry.delete(0, tk.END)
+        
+        # 清空自定义范围
+        self.custom_start_entry.delete(0, tk.END)
+        self.custom_start_entry.insert(0, "1")
+        self.custom_end_entry.delete(0, tk.END)
+        self.custom_end_entry.insert(0, "0")
+        
+        # 清空文件列表
+        self.video_tree.delete(*self.video_tree.get_children())
+        self.srt_tree.delete(*self.srt_tree.get_children())
+        self.folder_duration_tree.delete(*self.folder_duration_tree.get_children())
+        
+        # 重置数据
+        self.video_files_data = []
+        self.srt_files_data = []
+        self.folder_durations = {}
+        self.total_duration_seconds = 0.0
+        self.auto_scan_scheduled = False
+        
+        # 更新标签
+        self.video_count_label.config(text="视频文件总数: 0")
+        self.srt_count_label.config(text="字幕文件总数: 0")
+        self.total_duration_label.config(text="视频总时长: 00:00:00")
+        self.total_videos_label.config(text="(共0个视频)")
+        
+        # 禁用合并按钮
+        self.merge_all_button.config(state=tk.DISABLED)
+        self.custom_merge_button.config(state=tk.DISABLED)
+        
+        # 重置进度条
+        self.progress["value"] = 0
+        
+        # 清空日志
+        self.log_text.delete(1.0, tk.END)
+        
+        # 更新状态栏
+        self.status_bar.config(text="已重置")
+        
+        self.log_message("✓ 所有内容已重置，可以开始新的任务！")
 
 
 
@@ -759,6 +990,8 @@ class SubtitleMerger:
             
             # 记录所有需要修正的字幕
             corrected_subtitles = []  # 存储需要修正的字幕信息
+            large_time_diff_subtitles = []  # 存储时间差异过大的字幕（超过3秒）
+            time_disorder_subtitles = []  # 存储时间轴乱序的字幕
             
             processed_count = 0
             for i, video_data_item in enumerate(selected_videos_data):
@@ -870,43 +1103,110 @@ class SubtitleMerger:
                     except Exception as enc_e: self.log_message(f"错误: 无法解码字幕 '{srt_name}': {enc_e}"); continue
                 except Exception as e: self.log_message(f"错误: 打开字幕 '{srt_name}' 失败: {e}"); continue
                 
+                # ===== 检测字幕时间轴顺序（不自动修复，记录待提醒）=====
+                if len(subs_for_current_file) > 1:
+                    # 检查时间轴是否有倒退
+                    time_regression_detected = False
+                    regression_details = ""
+                    for idx in range(1, len(subs_for_current_file)):
+                        prev_sub = subs_for_current_file[idx - 1]
+                        curr_sub = subs_for_current_file[idx]
+                        
+                        prev_time_ms = (prev_sub.start.hours * 3600000 + 
+                                       prev_sub.start.minutes * 60000 + 
+                                       prev_sub.start.seconds * 1000 + 
+                                       prev_sub.start.milliseconds)
+                        curr_time_ms = (curr_sub.start.hours * 3600000 + 
+                                       curr_sub.start.minutes * 60000 + 
+                                       curr_sub.start.seconds * 1000 + 
+                                       curr_sub.start.milliseconds)
+                        
+                        if curr_time_ms < prev_time_ms:
+                            time_regression_detected = True
+                            regression_details = f"第{idx}条 ({self.format_duration(curr_time_ms/1000)}) < 第{idx+1}条 ({self.format_duration(prev_time_ms/1000)})"
+                            self.log_message(f"  ⚠️ 检测到时间轴倒退: {regression_details}")
+                            break
+                    
+                    if time_regression_detected:
+                        # 记录到问题列表，稍后统一弹窗提醒
+                        disorder_info = {
+                            'video_name': video_name,
+                            'srt_name': srt_name,
+                            'episode_num': processed_count + 1,  # 序号
+                            'episode_display': srt_name,  # 显示文件名
+                            'details': regression_details
+                        }
+                        time_disorder_subtitles.append(disorder_info)
+                        self.log_message(f"  ⚠️ 此字幕文件时间轴混乱，建议手动检查修复")
+                # ===== 时间轴检测结束 =====
+                
                 # ===== 检测字幕时长（严格模式：0.01秒容差）=====
                 # 注意：字幕时长检测不影响偏移计算，偏移始终基于视频的实际帧数
                 if len(subs_for_current_file) > 0:
-                    last_sub = subs_for_current_file[-1]
-                    srt_end_time_ms = (last_sub.end.hours * 3600000 + 
-                                      last_sub.end.minutes * 60000 + 
-                                      last_sub.end.seconds * 1000 + 
-                                      last_sub.end.milliseconds)
+                    # 使用所有字幕中的最大结束时间，而不是最后一条
+                    # 这样可以避免时间轴乱序导致的误判
+                    max_end_time_ms = 0
+                    max_end_sub = None
+                    for sub in subs_for_current_file:
+                        end_time_ms = (sub.end.hours * 3600000 + 
+                                      sub.end.minutes * 60000 + 
+                                      sub.end.seconds * 1000 + 
+                                      sub.end.milliseconds)
+                        if end_time_ms > max_end_time_ms:
+                            max_end_time_ms = end_time_ms
+                            max_end_sub = sub
+                    
+                    srt_end_time_ms = max_end_time_ms
                     srt_end_time_seconds = srt_end_time_ms / 1000.0
                     
                     time_diff = srt_end_time_seconds - video_duration_seconds
                     
                     if abs(time_diff) > 0.01:
                         if time_diff > 0:
-                            correction_info = {
-                                'video_name': video_name,
-                                'srt_name': srt_name,
-                                'episode': processed_count + 1,
-                                'time_diff': time_diff,
-                                'srt_end': self.format_duration(srt_end_time_seconds),
-                                'video_duration': formatted_vid_dur
-                            }
-                            corrected_subtitles.append(correction_info)
-                            
+                            # 字幕超出视频时长的情况
                             self.log_message(f"  ⚠️ 警告：字幕结束时间超出视频时长 {time_diff:.3f}秒")
-                            self.log_message(f"     字幕结束: {self.format_duration(srt_end_time_seconds)}")
+                            self.log_message(f"     字幕最大结束: {self.format_duration(srt_end_time_seconds)}")
                             self.log_message(f"     视频时长: {formatted_vid_dur}")
                             
-                            # 修正字幕结束时间为视频时长
-                            video_duration_ms = int(video_duration_seconds * 1000)
-                            last_sub.end.hours = video_duration_ms // 3600000
-                            last_sub.end.minutes = (video_duration_ms % 3600000) // 60000
-                            last_sub.end.seconds = (video_duration_ms % 60000) // 1000
-                            last_sub.end.milliseconds = video_duration_ms % 1000
-                            
-                            self.log_message(f"     ✓ 已自动修正为: {formatted_vid_dur}")
+                            # 只检查字幕超出视频时长的情况（time_diff > 3秒）
+                            # 字幕提前结束不需要弹窗提醒（因为视频结尾可能没有对话）
+                            if time_diff > 3.0:
+                                # 超过3秒，记录到问题列表，不自动修正
+                                large_diff_info = {
+                                    'video_name': video_name,
+                                    'srt_name': srt_name,
+                                    'episode_num': processed_count + 1,  # 序号
+                                    'episode_display': srt_name,  # 显示文件名
+                                    'time_diff': time_diff,
+                                    'srt_end': self.format_duration(srt_end_time_seconds),
+                                    'video_duration': formatted_vid_dur
+                                }
+                                large_time_diff_subtitles.append(large_diff_info)
+                                self.log_message(f"     ⚠️ 超出时间过长（>{time_diff:.3f}秒），建议检查字幕和视频是否匹配")
+                            else:
+                                # 小于3秒的差异，自动修正
+                                correction_info = {
+                                    'video_name': video_name,
+                                    'srt_name': srt_name,
+                                    'episode_num': processed_count + 1,  # 序号
+                                    'episode_display': srt_name,  # 显示文件名
+                                    'time_diff': time_diff,
+                                    'srt_end': self.format_duration(srt_end_time_seconds),
+                                    'video_duration': formatted_vid_dur
+                                }
+                                corrected_subtitles.append(correction_info)
+                                
+                                # 修正最大结束时间的字幕
+                                if max_end_sub:
+                                    video_duration_ms = int(video_duration_seconds * 1000)
+                                    max_end_sub.end.hours = video_duration_ms // 3600000
+                                    max_end_sub.end.minutes = (video_duration_ms % 3600000) // 60000
+                                    max_end_sub.end.seconds = (video_duration_ms % 60000) // 1000
+                                    max_end_sub.end.milliseconds = video_duration_ms % 1000
+                                    
+                                    self.log_message(f"     ✓ 已自动修正为: {formatted_vid_dur}")
                         elif time_diff < -0.01:
+                            # 字幕提前结束是正常的，不需要特殊处理和弹窗提醒
                             self.log_message(f"  ℹ️ 字幕提前结束 {abs(time_diff):.3f}秒（正常）")
                         else:
                             self.log_message(f"  ✓ 字幕时长完美（差异 {time_diff:.3f}秒）")
@@ -956,7 +1256,80 @@ class SubtitleMerger:
             
             self.log_message(f"共成功匹配并处理了 {processed_count} 对影音文件。")
             
-            # ===== 显示所有需要修正的字幕汇总 =====
+            # ===== 显示所有需要人工检查的字幕问题汇总 =====
+            # 统一弹窗提醒：时间轴乱序 + 超出3秒的情况
+            has_problems = large_time_diff_subtitles or time_disorder_subtitles
+            
+            if has_problems:
+                self.log_message("")
+                self.log_message("="*70)
+                self.log_message("🚨🚨🚨 字幕文件问题汇总 🚨🚨🚨")
+                self.log_message("="*70)
+                
+                warning_details = []
+                
+                # 处理时间轴乱序的情况
+                if time_disorder_subtitles:
+                    self.log_message(f"\n【时间轴乱序】检测到 {len(time_disorder_subtitles)} 个字幕文件时间轴混乱：")
+                    self.log_message("")
+                    for info in time_disorder_subtitles:
+                        file_display = os.path.splitext(info['srt_name'])[0]  # 去掉扩展名
+                        self.log_message(f"🔀 {file_display}: {info['srt_name']}")
+                        self.log_message(f"   视频: {info['video_name']}")
+                        self.log_message(f"   问题: {info['details']}")
+                        self.log_message("")
+                        warning_details.append(f"{file_display}: 时间轴乱序")
+                
+                # 处理超出3秒的情况
+                if large_time_diff_subtitles:
+                    self.log_message(f"\n【超出时长】检测到 {len(large_time_diff_subtitles)} 个字幕文件超出视频时长超过3秒：")
+                    self.log_message("")
+                    for info in large_time_diff_subtitles:
+                        file_display = os.path.splitext(info['srt_name'])[0]  # 去掉扩展名
+                        self.log_message(f"⏰ {file_display}: {info['srt_name']}")
+                        self.log_message(f"   视频: {info['video_name']}")
+                        self.log_message(f"   超出: {info['time_diff']:.3f}秒")
+                        self.log_message(f"   字幕结束: {info['srt_end']}")
+                        self.log_message(f"   视频时长: {info['video_duration']}")
+                        self.log_message("")
+                        warning_details.append(f"{file_display}: 超出 {info['time_diff']:.1f}秒")
+                
+                self.log_message("="*70)
+                self.log_message("⚠️ 以上字幕文件未自动修正，建议手动检查！")
+                self.log_message("="*70)
+                self.log_message("")
+                
+                # 统一弹窗提醒用户
+                warning_message = "检测到字幕文件存在以下问题：\n\n"
+                
+                if time_disorder_subtitles:
+                    warning_message += f"🔀 时间轴乱序：{len(time_disorder_subtitles)} 个文件\n"
+                    warning_message += "   • 字幕时间轴前后顺序混乱\n"
+                    warning_message += "   • 拖入视频软件会显示很长\n\n"
+                
+                if large_time_diff_subtitles:
+                    warning_message += f"⏰ 超出时长：{len(large_time_diff_subtitles)} 个文件\n"
+                    warning_message += "   • 字幕比视频长超过3秒\n"
+                    warning_message += "   • 可能版本不匹配\n\n"
+                
+                warning_message += "可能的原因：\n"
+                warning_message += "• 字幕和视频版本不匹配\n"
+                warning_message += "• 字幕文件本身有问题\n"
+                warning_message += "• 视频帧率与字幕制作时不一致\n\n"
+                warning_message += "问题文件详情：\n"
+                
+                # 限制弹窗显示的条目数量，避免过长
+                display_items = warning_details[:8]  # 最多显示8个
+                warning_message += "\n".join(display_items)
+                
+                if len(warning_details) > 8:
+                    warning_message += f"\n... 还有 {len(warning_details) - 8} 个文件"
+                
+                warning_message += "\n\n⚠️ 这些文件未自动修正，建议手动检查后重新处理！"
+                
+                if show_completion_dialog:
+                    self.root.after(0, lambda: messagebox.showwarning("字幕文件问题警告", warning_message))
+            
             if corrected_subtitles:
                 self.log_message("")
                 self.log_message("="*70)
