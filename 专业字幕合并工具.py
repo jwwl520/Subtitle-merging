@@ -1215,10 +1215,14 @@ class SubtitleMerger:
                 # ===== 检测结束 =====
                 
                 # 使用基于帧的精确偏移
-                if cumulative_frames > 0 and reference_fps > 0:
+                # 注意：第一个视频（cumulative_frames=0）不需要偏移，保持原始时间
+                # 第二个及以后的视频才需要偏移
+                if reference_fps and reference_fps > 0 and cumulative_frames > 0:
                     # 计算精确的偏移时间（避免浮点累积误差）
                     # 方法：逐条字幕手动调整时间，而不是使用shift
                     offset_ms = int((cumulative_frames * 1000.0) / reference_fps)
+                    
+                    self.log_message(f"  应用偏移: {offset_ms}毫秒 (基于{cumulative_frames}帧)")
                     
                     for sub in subs_for_current_file:
                         # 转换开始时间
@@ -1244,12 +1248,20 @@ class SubtitleMerger:
                         sub.end.minutes = (new_end_ms % 3600000) // 60000
                         sub.end.seconds = (new_end_ms % 60000) // 1000
                         sub.end.milliseconds = new_end_ms % 1000
+                elif cumulative_frames == 0:
+                    # 第一个视频，不需要偏移
+                    self.log_message(f"  首个视频，无需偏移")
+                else:
+                    # 缺少帧率信息，使用备用方法
+                    self.log_message(f"  警告：缺少帧率信息，跳过偏移")
                 
                 all_subs_combined.extend(subs_for_current_file)
                 
                 # 累加帧数（整数运算，完全精确）
+                # 在添加到合并列表之后立即累加，确保下一个视频使用正确的偏移量
                 if video_frames > 0:
                     cumulative_frames += video_frames
+                    self.log_message(f"  累加后帧数: {cumulative_frames}")
                 
                 processed_count +=1
                 self.progress["value"] = i + 1; self.root.after(0, self.root.update_idletasks)
