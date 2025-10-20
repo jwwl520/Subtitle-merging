@@ -1338,7 +1338,7 @@ class SubtitleMerger:
                 self.log_message(f"检测到 {len(corrected_subtitles)} 个字幕文件的结束时间超出视频时长，已自动修正：")
                 self.log_message("")
                 for info in corrected_subtitles:
-                    self.log_message(f"❌ 第{info['episode']}集: {info['srt_name']}")
+                    self.log_message(f"❌ 第{info['episode_num']}集: {info['srt_name']}")
                     self.log_message(f"   视频: {info['video_name']}")
                     self.log_message(f"   超出: {info['time_diff']:.3f}秒")
                     self.log_message(f"   原字幕结束时间: {info['srt_end']}")
