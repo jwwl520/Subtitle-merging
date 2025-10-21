@@ -1099,9 +1099,27 @@ class SubtitleMerger:
                 try:
                     subs_for_current_file = pysrt.open(srt_full_path, encoding='utf-8')
                 except UnicodeDecodeError:
-                    try: self.log_message(f"'{srt_name}' UTF-8解码失败，尝试GBK..."); subs_for_current_file = pysrt.open(srt_full_path, encoding='gbk')
-                    except Exception as enc_e: self.log_message(f"错误: 无法解码字幕 '{srt_name}': {enc_e}"); continue
-                except Exception as e: self.log_message(f"错误: 打开字幕 '{srt_name}' 失败: {e}"); continue
+                    try: 
+                        self.log_message(f"'{srt_name}' UTF-8解码失败，尝试GBK...")
+                        subs_for_current_file = pysrt.open(srt_full_path, encoding='gbk')
+                    except Exception as enc_e: 
+                        self.log_message(f"错误: 无法解码字幕 '{srt_name}': {enc_e}")
+                        # 即使解码失败，也必须累加帧数，否则后续偏移会错误
+                        if video_frames > 0:
+                            cumulative_frames += video_frames
+                            self.log_message(f"  累积帧数（解码失败后）: {cumulative_frames}")
+                        self.progress["value"] = i + 1
+                        self.root.after(0, self.root.update_idletasks)
+                        continue
+                except Exception as e: 
+                    self.log_message(f"错误: 打开字幕 '{srt_name}' 失败: {e}")
+                    # 即使打开失败，也必须累加帧数，否则后续偏移会错误
+                    if video_frames > 0:
+                        cumulative_frames += video_frames
+                        self.log_message(f"  累积帧数（打开失败后）: {cumulative_frames}")
+                    self.progress["value"] = i + 1
+                    self.root.after(0, self.root.update_idletasks)
+                    continue
                 
                 # ===== 检测字幕时间轴顺序（不自动修复，记录待提醒）=====
                 if len(subs_for_current_file) > 1:
