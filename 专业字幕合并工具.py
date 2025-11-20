@@ -604,14 +604,18 @@ class SubtitleMerger:
                 # 获取基于帧的精确信息
                 total_frames, fps_decimal, duration = self.get_video_frame_info_ffprobe(video_full_path)
                 
+                # 同时获取ffprobe直接报告的duration（用于文件夹时长统计）
+                raw_duration = self.get_video_duration_ffprobe(video_full_path)
+                
                 if total_frames is not None and fps_decimal is not None and duration is not None:
                     # 存储完整信息：[文件名, 路径, 基础名, 时长, 帧数, 帧率]
                     video_data_item[3] = duration
                     video_data_item[4] = total_frames
                     video_data_item[5] = fps_decimal
                     
-                    self.total_duration_seconds += duration
-                    self.folder_durations[relative_folder] = self.folder_durations.get(relative_folder, 0.0) + duration
+                    # 文件夹时长统计使用ffprobe直接报告的duration（类似Windows属性）
+                    self.total_duration_seconds += raw_duration
+                    self.folder_durations[relative_folder] = self.folder_durations.get(relative_folder, 0.0) + raw_duration
                     
                     formatted_duration = self.format_duration(duration)
                     framerate_display = f"{total_frames}f@{fps_decimal:.2f}fps"
@@ -648,11 +652,11 @@ class SubtitleMerger:
                 self.progress["value"] = i + 1
                 self.root.after(0, self.root.update_idletasks)
         
-        self.total_duration_label.config(text=f"视频总时长: {self.format_duration(self.total_duration_seconds)}")
+        self.total_duration_label.config(text=f"视频总时长: {self.format_duration_minutes_only(self.total_duration_seconds)}")
         # 使用智能排序来显示文件夹时长，按数字大小排序
         sorted_folders = sorted(self.folder_durations.items(), key=lambda x: self.smart_folder_sort_key(x[0]))
         for folder, dur_sec in sorted_folders: 
-            self.folder_duration_tree.insert("", tk.END, values=(folder, self.format_duration(dur_sec)))
+            self.folder_duration_tree.insert("", tk.END, values=(folder, self.format_duration_minutes_only(dur_sec)))
         self.log_message(f"扫描完成！视频总时长: {self.format_duration(self.total_duration_seconds)}")
         if self.folder_durations: self.log_message("各文件夹时长已更新。")
         
@@ -926,6 +930,14 @@ class SubtitleMerger:
         minutes = (seconds_int % 3600) // 60
         seconds = seconds_int % 60
         return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
+    
+    def format_duration_minutes_only(self, seconds_float):
+        """格式化时长为分钟:秒格式（用于文件夹时长显示）"""
+        if not isinstance(seconds_float, (int, float)) or seconds_float < 0: return "00:00"
+        seconds_int = int(seconds_float)
+        total_minutes = seconds_int // 60
+        seconds = seconds_int % 60
+        return f"{total_minutes}:{seconds:02d}"
 
     def get_video_duration_ffprobe(self, video_path):
         try:
