@@ -102,18 +102,27 @@ class SubtitleMerger:
     def create_path_section(self):
         path_frame = ttk.LabelFrame(self.main_frame, text="路径设置", padding="15")
         path_frame.pack(fill=tk.X, pady=(0,10))
-        ttk.Label(path_frame, text="视频文件夹:").grid(row=0, column=0, sticky=tk.W, pady=5)
+        
+        # 添加自动识别文件夹按钮
+        auto_recognize_frame = ttk.Frame(path_frame)
+        auto_recognize_frame.grid(row=0, column=0, columnspan=3, sticky=tk.W, pady=(0,10))
+        ttk.Button(auto_recognize_frame, text="🔍 自动识别文件夹", command=self.select_parent_folder, 
+                  style='Accent.TButton', width=20).pack(side=tk.LEFT, padx=5)
+        ttk.Label(auto_recognize_frame, text="（自动识别包含【无字幕】和-英语SRT终版的文件夹）", 
+                 foreground="gray").pack(side=tk.LEFT, padx=5)
+        
+        ttk.Label(path_frame, text="视频文件夹:").grid(row=1, column=0, sticky=tk.W, pady=5)
         self.video_folder_entry = ttk.Entry(path_frame, width=70)
-        self.video_folder_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
-        ttk.Button(path_frame, text="选择", command=self.select_video_folder).grid(row=0, column=2, padx=5, pady=5)
-        ttk.Label(path_frame, text="字幕文件夹:").grid(row=1, column=0, sticky=tk.W, pady=5)
+        self.video_folder_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)
+        ttk.Button(path_frame, text="选择", command=self.select_video_folder).grid(row=1, column=2, padx=5, pady=5)
+        ttk.Label(path_frame, text="字幕文件夹:").grid(row=2, column=0, sticky=tk.W, pady=5)
         self.srt_folder_entry = ttk.Entry(path_frame, width=70)
-        self.srt_folder_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)
-        ttk.Button(path_frame, text="选择", command=self.select_srt_folder).grid(row=1, column=2, padx=5, pady=5)
-        ttk.Label(path_frame, text="输出字幕文件:").grid(row=2, column=0, sticky=tk.W, pady=5)
+        self.srt_folder_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
+        ttk.Button(path_frame, text="选择", command=self.select_srt_folder).grid(row=2, column=2, padx=5, pady=5)
+        ttk.Label(path_frame, text="输出字幕文件:").grid(row=3, column=0, sticky=tk.W, pady=5)
         self.output_file_entry = ttk.Entry(path_frame, width=70)
-        self.output_file_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
-        ttk.Button(path_frame, text="选择", command=self.select_output_file).grid(row=2, column=2, padx=5, pady=5)
+        self.output_file_entry.grid(row=3, column=1, padx=5, pady=5, sticky=tk.EW)
+        ttk.Button(path_frame, text="选择", command=self.select_output_file).grid(row=3, column=2, padx=5, pady=5)
         path_frame.columnconfigure(1, weight=1)
 
     def create_info_section(self):
@@ -501,6 +510,89 @@ class SubtitleMerger:
     def select_output_file(self):
         output_file = filedialog.asksaveasfilename(defaultextension=".srt", filetypes=[("SRT 文件", "*.srt")], title="保存合并后的字幕文件")
         if output_file: self.output_file_entry.delete(0, tk.END); self.output_file_entry.insert(0, output_file)
+    
+    def select_parent_folder(self):
+        """选择父文件夹并自动识别视频和字幕文件夹"""
+        parent_folder = filedialog.askdirectory(title="选择包含视频和字幕文件夹的父文件夹")
+        if parent_folder:
+            self.auto_recognize_folders(parent_folder)
+    
+    def auto_recognize_folders(self, parent_folder):
+        """自动识别父文件夹中的视频文件夹和字幕文件夹"""
+        self.log_message("开始自动识别文件夹...")
+        self.log_message(f"父文件夹: {parent_folder}")
+        
+        video_folder = None
+        srt_folder = None
+        
+        # 遍历父文件夹中的所有子文件夹
+        try:
+            for item in os.listdir(parent_folder):
+                item_path = os.path.join(parent_folder, item)
+                if os.path.isdir(item_path):
+                    # 检查是否包含【无字幕】
+                    if "【无字幕】" in item:
+                        video_folder = item_path
+                        self.log_message(f"✓ 识别到视频文件夹: {item}")
+                    # 检查是否包含-英语SRT终版
+                    elif "-英语SRT终版" in item:
+                        srt_folder = item_path
+                        self.log_message(f"✓ 识别到字幕文件夹: {item}")
+            
+            # 验证识别结果
+            if video_folder and srt_folder:
+                # 设置视频文件夹
+                self.video_folder_entry.delete(0, tk.END)
+                self.video_folder_entry.insert(0, video_folder)
+                
+                # 设置字幕文件夹
+                self.srt_folder_entry.delete(0, tk.END)
+                self.srt_folder_entry.insert(0, srt_folder)
+                
+                # 自动设置输出路径：父文件夹/字幕/合并字幕.srt
+                output_folder = os.path.join(parent_folder, "字幕")
+                # 创建输出文件夹（如果不存在）
+                if not os.path.exists(output_folder):
+                    os.makedirs(output_folder)
+                    self.log_message(f"✓ 创建输出文件夹: {output_folder}")
+                
+                output_file = os.path.join(output_folder, "合并字幕.srt")
+                self.output_file_entry.delete(0, tk.END)
+                self.output_file_entry.insert(0, output_file)
+                
+                self.log_message("✓ 文件夹识别完成！")
+                self.log_message(f"  视频文件夹: {os.path.basename(video_folder)}")
+                self.log_message(f"  字幕文件夹: {os.path.basename(srt_folder)}")
+                self.log_message(f"  输出位置: 字幕/合并字幕.srt")
+                
+                # 自动更新文件列表
+                self.update_file_lists()
+                
+                messagebox.showinfo("识别成功", 
+                    f"已自动识别并设置路径：\n\n"
+                    f"视频文件夹: {os.path.basename(video_folder)}\n"
+                    f"字幕文件夹: {os.path.basename(srt_folder)}\n"
+                    f"输出位置: 字幕/合并字幕.srt\n\n"
+                    f"正在扫描文件...")
+            else:
+                error_msg = "未能识别到文件夹！\n\n"
+                if not video_folder:
+                    error_msg += "✗ 未找到包含【无字幕】的视频文件夹\n"
+                if not srt_folder:
+                    error_msg += "✗ 未找到包含-英语SRT终版的字幕文件夹\n"
+                error_msg += "\n请确保文件夹名称符合规范。"
+                
+                self.log_message("✗ 文件夹识别失败")
+                if not video_folder:
+                    self.log_message("  未找到包含【无字幕】的文件夹")
+                if not srt_folder:
+                    self.log_message("  未找到包含-英语SRT终版的文件夹")
+                
+                messagebox.showwarning("识别失败", error_msg)
+        
+        except Exception as e:
+            self.log_message(f"✗ 识别过程出错: {str(e)}")
+            messagebox.showerror("错误", f"识别文件夹时发生错误：\n{str(e)}")
 
     def update_file_lists(self):
         self.log_message("正在扫描文件...")
